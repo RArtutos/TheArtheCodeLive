@@ -1,15 +1,15 @@
-import { generateRandomId } from '../store/editorStore';
+import { generateRandomId, initializeSession, useEditorStore } from '../store/editorStore';
 
-export const getSessionId = () => {
-  // Remove leading slash and get the first path segment
+export const getSessionId = async () => {
   const path = window.location.pathname.split('/')[1];
+  const sessionId = path && path.length > 0 ? path : generateRandomId();
   
-  if (path && path.length > 0) {
-    return path;
+  if (!path) {
+    window.history.pushState({}, '', `/${sessionId}`);
   }
+
+  const session = await initializeSession(sessionId);
+  useEditorStore.getState().setCurrentSession(session);
   
-  const newSessionId = generateRandomId();
-  // Use pushState to update URL without reload
-  window.history.pushState({}, '', `/${newSessionId}`);
-  return newSessionId;
+  return sessionId;
 };

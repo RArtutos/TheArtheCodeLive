@@ -6,30 +6,36 @@ import { oneDark } from '@codemirror/theme-one-dark';
 import * as Y from 'yjs';
 import { yCollab } from 'y-codemirror.next';
 import { WebrtcProvider } from 'y-webrtc';
+import { IndexeddbPersistence } from 'y-indexeddb';
+import { doc, setDoc } from 'firebase/firestore';
+import { db } from '../firebase';
 import { useEditorStore } from '../store/editorStore';
 import { getSessionId } from '../utils/session';
 
 const Editor = () => {
-  const { theme, currentUser } = useEditorStore();
+  const { theme, currentUser, currentSession } = useEditorStore();
   const ydoc = useRef<Y.Doc>();
   const provider = useRef<WebrtcProvider>();
   const awareness = useRef<any>();
+  const persistence = useRef<IndexeddbPersistence>();
 
   useEffect(() => {
-    if (!ydoc.current) {
-      const sessionId = getSessionId();
+    if (!ydoc.current && currentSession) {
       ydoc.current = new Y.Doc();
       
+      // Setup IndexedDB persistence
+      persistence.current = new IndexeddbPersistence(currentSession.id, ydoc.current);
+      
       // Configure WebRTC with more reliable settings
-      provider.current = new WebrtcProvider(`collaborative-editor-${sessionId}`, ydoc.current, {
+      provider.current = new WebrtcProvider(`collaborative-editor-${currentSession.id}`, ydoc.current, {
         signaling: [
           'wss://signaling.yjs.dev',
           'wss://y-webrtc-signaling-eu.herokuapp.com',
           'wss://y-webrtc-signaling-us.herokuapp.com'
         ],
-        password: null, // No password required
+        password: null,
         awareness: awareness.current,
-        maxConns: 20 + Math.floor(Math.random() * 15), // Random number of connections
+        maxConns: 20 + Math.floor(Math.random() * 15),
         filterBcConns: false,
         peerOpts: {
           config: {
@@ -50,9 +56,14 @@ const Editor = () => {
         });
       }
 
-      // Handle connection status
-      provider.current.on('status', ({ status }: { status: string }) => {
-        console.log('Connection status:', status);
+      // Save content to Firebase when changes occur
+      const ytext = ydoc.current.getText('codemirror');
+      ytext.observe(() => {
+        setDoc(doc(db, 'sessions', currentSession.id), {
+          ...currentSession,
+          content: ytext.toString(),
+          lastModified: Date.now(),
+        });
       });
     }
 
@@ -60,11 +71,14 @@ const Editor = () => {
       if (provider.current) {
         provider.current.destroy();
       }
+      if (persistence.current) {
+        persistence.current.destroy();
+      }
       if (ydoc.current) {
         ydoc.current.destroy();
       }
     };
-  }, [currentUser]);
+  }, [currentUser, currentSession]);
 
   const extensions = [
     javascript({ jsx: true, typescript: true }),
@@ -82,7 +96,7 @@ const Editor = () => {
   return (
     <div className="h-full w-full">
       <CodeMirror
-        value=""
+        value={currentSession?.content || ""}
         height="100%"
         theme={theme}
         extensions={extensions}
