@@ -6,87 +6,115 @@ import { oneDark } from '@codemirror/theme-one-dark';
 import * as Y from 'yjs';
 import { yCollab } from 'y-codemirror.next';
 import { WebrtcProvider } from 'y-webrtc';
-import { IndexeddbPersistence } from 'y-indexeddb';
-import { doc, setDoc } from 'firebase/firestore';
+import { doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useEditorStore } from '../store/editorStore';
-import { getSessionId } from '../utils/session';
 
 const Editor = () => {
   const { theme, currentUser, currentSession } = useEditorStore();
   const ydoc = useRef<Y.Doc>();
   const provider = useRef<WebrtcProvider>();
   const awareness = useRef<any>();
-  const persistence = useRef<IndexeddbPersistence>();
 
   useEffect(() => {
-    if (!ydoc.current && currentSession) {
-      ydoc.current = new Y.Doc();
-      
-      // Setup IndexedDB persistence
-      persistence.current = new IndexeddbPersistence(currentSession.id, ydoc.current);
-      
-      // Configure WebRTC with more reliable settings
-      provider.current = new WebrtcProvider(`collaborative-editor-${currentSession.id}`, ydoc.current, {
-        signaling: [
-          'wss://signaling.yjs.dev',
-          'wss://y-webrtc-signaling-eu.herokuapp.com',
-          'wss://y-webrtc-signaling-us.herokuapp.com'
-        ],
-        password: null,
-        awareness: awareness.current,
-        maxConns: 20 + Math.floor(Math.random() * 15),
-        filterBcConns: false,
-        peerOpts: {
-          config: {
-            iceServers: [
-              { urls: 'stun:stun.l.google.com:19302' },
-              { urls: 'stun:global.stun.twilio.com:3478' }
-            ]
-          }
+    if (!currentSession?.id || !currentUser) return;
+
+    // Initialize Y.js document
+    ydoc.current = new Y.Doc();
+    const ytext = ydoc.current.getText('codemirror');
+
+    // Set up WebRTC provider
+    provider.current = new WebrtcProvider(`room-${currentSession.id}`, ydoc.current, {
+      signaling: ['wss://signaling.yjs.dev'],
+      password: null,
+      awareness: awareness.current,
+      maxConns: 30,
+      filterBcConns: true,
+      peerOpts: {
+        config: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            {
+              urls: 'turn:relay.metered.ca:80',
+              username: 'e899095c10ee55f5f17b17e2',
+              credential: 'uWdWNnxuqy/sGLrI',
+            },
+            {
+              urls: 'turn:relay.metered.ca:443',
+              username: 'e899095c10ee55f5f17b17e2',
+              credential: 'uWdWNnxuqy/sGLrI',
+            },
+          ]
+        }
+      }
+    });
+
+    // Set up awareness
+    awareness.current = provider.current.awareness;
+    awareness.current.setLocalState({
+      user: currentUser,
+      cursor: null
+    });
+
+    // Set up Firebase sync
+    const docRef = doc(db, 'sessions', currentSession.id);
+
+    // Initial content load
+    const loadInitialContent = async () => {
+      const snapshot = await onSnapshot(docRef, (doc) => {
+        const data = doc.data();
+        if (data?.content && ytext.toString() !== data.content) {
+          ytext.delete(0, ytext.length);
+          ytext.insert(0, data.content);
         }
       });
 
-      awareness.current = provider.current.awareness;
+      return snapshot;
+    };
 
-      if (currentUser) {
-        awareness.current.setLocalState({
-          user: currentUser,
-          cursor: null,
-        });
-      }
-
-      // Save content to Firebase when changes occur
-      const ytext = ydoc.current.getText('codemirror');
-      ytext.observe(() => {
-        setDoc(doc(db, 'sessions', currentSession.id), {
-          ...currentSession,
-          content: ytext.toString(),
-          lastModified: Date.now(),
-        });
+    // Save changes to Firebase
+    const saveToFirebase = () => {
+      const content = ytext.toString();
+      setDoc(docRef, {
+        id: currentSession.id,
+        name: currentSession.name,
+        content,
+        lastModified: Date.now()
       });
-    }
+    };
 
+    // Observe changes and save to Firebase
+    const observer = () => {
+      saveToFirebase();
+    };
+
+    ytext.observe(observer);
+    const unsubscribe = loadInitialContent();
+
+    // Cleanup
     return () => {
+      ytext.unobserve(observer);
+      unsubscribe();
       if (provider.current) {
         provider.current.destroy();
-      }
-      if (persistence.current) {
-        persistence.current.destroy();
       }
       if (ydoc.current) {
         ydoc.current.destroy();
       }
     };
-  }, [currentUser, currentSession]);
+  }, [currentSession?.id, currentUser]);
+
+  if (!currentSession || !currentUser) {
+    return null;
+  }
 
   const extensions = [
     javascript({ jsx: true, typescript: true }),
     python(),
-    theme === 'dark' ? oneDark : [],
+    theme === 'dark' ? oneDark : []
   ];
 
-  if (ydoc.current) {
+  if (ydoc.current && awareness.current) {
     const ytext = ydoc.current.getText('codemirror');
     extensions.push(
       yCollab(ytext, awareness.current, { user: currentUser })
@@ -96,11 +124,20 @@ const Editor = () => {
   return (
     <div className="h-full w-full">
       <CodeMirror
-        value={currentSession?.content || ""}
+        value={currentSession.content || ''}
         height="100%"
         theme={theme}
         extensions={extensions}
         className="h-full text-base"
+        onChange={(value) => {
+          if (ydoc.current) {
+            const ytext = ydoc.current.getText('codemirror');
+            if (ytext.toString() !== value) {
+              ytext.delete(0, ytext.length);
+              ytext.insert(0, value);
+            }
+          }
+        }}
         basicSetup={{
           lineNumbers: true,
           highlightActiveLineGutter: true,
