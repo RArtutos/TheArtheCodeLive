@@ -19,7 +19,28 @@ const Editor = () => {
     if (!ydoc.current) {
       const sessionId = getSessionId();
       ydoc.current = new Y.Doc();
-      provider.current = new WebrtcProvider(`collaborative-editor-${sessionId}`, ydoc.current);
+      
+      // Configure WebRTC with more reliable settings
+      provider.current = new WebrtcProvider(`collaborative-editor-${sessionId}`, ydoc.current, {
+        signaling: [
+          'wss://signaling.yjs.dev',
+          'wss://y-webrtc-signaling-eu.herokuapp.com',
+          'wss://y-webrtc-signaling-us.herokuapp.com'
+        ],
+        password: null, // No password required
+        awareness: awareness.current,
+        maxConns: 20 + Math.floor(Math.random() * 15), // Random number of connections
+        filterBcConns: false,
+        peerOpts: {
+          config: {
+            iceServers: [
+              { urls: 'stun:stun.l.google.com:19302' },
+              { urls: 'stun:global.stun.twilio.com:3478' }
+            ]
+          }
+        }
+      });
+
       awareness.current = provider.current.awareness;
 
       if (currentUser) {
@@ -28,11 +49,20 @@ const Editor = () => {
           cursor: null,
         });
       }
+
+      // Handle connection status
+      provider.current.on('status', ({ status }: { status: string }) => {
+        console.log('Connection status:', status);
+      });
     }
 
     return () => {
-      provider.current?.destroy();
-      ydoc.current?.destroy();
+      if (provider.current) {
+        provider.current.destroy();
+      }
+      if (ydoc.current) {
+        ydoc.current.destroy();
+      }
     };
   }, [currentUser]);
 
